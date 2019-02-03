@@ -1,0 +1,200 @@
+# -*-coding:utf-8-*-
+import datetime
+import time
+import requests
+import csv
+from bs4 import BeautifulSoup
+import json
+import os
+
+# constant
+# csv file name
+CSV_FILE_NAME = "thefly.csv"
+# csv title
+CSV_TITLE = ["Date", "Name", "Date Range", "Managers", "Location", "City", "State", "Country", "Comments",
+             "Program Days"]
+# start date
+BEGIN_DATE = "2015-05-11"
+# end date
+END_DATE = "2018-11-13"
+# head
+HEADER = {
+    "Cookie": "__cfduid=db53dc4b05bd1204a14ebb04d260b8f611541984210; TheflyUsTr=172.68.133.153.1541984210447235; PHPSESSID=mjj1nrgbnmadq08ni2ljf0ct33; _ga=GA1.2.2015366048.1541984215; _gid=GA1.2.130288476.1541984215; _jsuid=3347129825; __gads=ID=77075b25885c2b7d:T=1541984214:S=ALNI_MbrHnfHmh0hGP8MwJALGCOKlZXeRQ; __qca=P0-1246854824-1541984216094; _ccm_inf=1; IC_viewcount_thefly.com=1; sessionNotify=1; heatmaps_g2g_100767783=no; _gat=1; _eventqueue=%7B%22heatmap%22%3A%5B%5D%2C%22events%22%3A%5B%5D%7D",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/68.0.3440.84 Safari/537.36"
+}
+
+
+def main():
+    global CSV_FILE_NAME
+    create_csv()
+    print("Collection Begin")
+    date = datetime.datetime.strptime(BEGIN_DATE, "%Y-%m-%d")
+    end_date = datetime.datetime.strptime(END_DATE, "%Y-%m-%d")
+    while date <= end_date:
+        lst_data = get_datas(date.strftime("%Y-%m-%d"))
+        save_csv(lst_data)
+        date += datetime.timedelta(days=1)
+    print("The procedure is ended")
+
+
+def get_datas(date):
+    """
+    Extract data
+    :return:
+    """
+    if not date:
+        return
+    global CSV_TITLE
+    # assembling url
+    print("Collecting%s" % date)
+    url = "https://thefly.com/events.php?fecha=%s" % date
+    # The final list it returns
+    lst_all_data = []
+    try:
+        # Execute requests
+        response = requests.get(url, headers=HEADER)
+        text = response.text
+    except Exception as e:
+        # Abnormal occured, request not found, it might be locked, run after 10 sec rest
+        time.sleep(10)
+        return get_datas(date)
+    soup = BeautifulSoup(text, "lxml")
+    lst_li = soup.find_all("li", class_="fpo_overlay C")
+    if lst_li:
+        for li in lst_li:
+            div = li.find("div", class_="muestraEvento eventoPagEventos")
+            if div:
+                id_div_evento = div.get("id")
+                id = div.get("data-id")
+                tipo_evento_id = div.get("data-tipoeventoid")
+                lst_data = get_detail(date, id_div_evento, id, tipo_evento_id)
+                if lst_data:
+                    lst_all_data.append(lst_data)
+    return lst_all_data
+
+
+def get_detail(date, id_div_evento, id, tipo_evento_id):
+    """
+    获取详细信息
+    :param date:
+    :param id_div_evento:
+    :param id:
+    :param tipo_evento_id:
+    :return:
+    """
+    if not date or not id_div_evento or not id or not tipo_evento_id:
+        return
+    url = "https://thefly.com/ajax/getEventContent.php?id_div_evento=%s&id=%s&tipoEventoId=%s" \
+          % (id_div_evento, id, tipo_evento_id)
+    try:
+        # 执行请求
+        response = requests.get(url, headers=HEADER)
+        text = response.text
+    except Exception as e:
+        time.sleep(2)
+        return get_datas(date)
+    data = json.loads(text)
+    if not data:
+        return
+    data_evento = data.get("data_evento")
+    if not data_evento:
+        return
+    soup = BeautifulSoup(data_evento, "lxml")
+    lst_data = [""] * len(CSV_TITLE)
+    # 查询日期写入第一列
+    lst_data[0] = date
+    # 名称写入第二列
+    span_name = soup.find("span", class_="Nombre orange")
+    if span_name:
+        lst_data[1] = span_name.get_text(strip=True)
+    # 日期范围写入第三列
+    span_time = soup.find("span", class_="str_time")
+    if span_time:
+        lst_data[2] = span_time.get_text(strip=True)
+    # 下面部分是Manager Location这些，拿到Label之后索引到标题列，然后写入
+    div_tablita = soup.find("div", class_="tablita")
+    if div_tablita:
+        lst_div = div_tablita.find_all("div", recursive=False)
+        if lst_div:
+            for div in lst_div:
+                span = div.find("span")
+                if span:
+                    span_text = span.get_text(strip=True)
+                    if span_text.rstrip(":") in CSV_TITLE:
+                        lst_data[CSV_TITLE.index(span_text.rstrip(":"))] \
+                            = div.get_text(strip=True).strip(span_text).strip()
+    # 接下来是Program Day
+    lst_program_table = soup.find_all("table", class_="programTable")
+    if lst_program_table:
+        # 定义所有天的字符串列表，每个之间将用;隔开
+        lst_program_days_text = []
+        for program_table in lst_program_table:
+            lst_tr = program_table.find_all("tr")
+            if lst_tr:
+                # 定义某天的字符串列表，每个之间将用;隔开
+                lst_program_day_text = []
+                for tr in lst_tr:
+                    lst_td = tr.find_all("td")
+                    if lst_td and len(lst_td) >= 2:
+                        lst_program_day_text.append(lst_td[1].get_text(strip=True))
+                lst_program_days_text.append(" ".join(lst_program_day_text))
+        lst_data[-1] = "||".join(lst_program_days_text)
+    return lst_data
+
+
+def create_csv():
+    """
+    创建csv
+    :return:
+    """
+    global CSV_FILE_NAME, CSV_TITLE
+    if os.path.exists(CSV_FILE_NAME):
+        return
+    with open(CSV_FILE_NAME, "w", encoding="utf-8", newline="") as file:
+        csv_write = csv.writer(file)
+        csv_write.writerow(CSV_TITLE)
+
+
+def save_csv(lst_data):
+    """
+    保存数据
+    :param lst_data:
+    :return:
+    """
+    if not lst_data:
+        return
+    global CSV_FILE_NAME
+    with open(CSV_FILE_NAME, "a", encoding="utf-8", newline="") as file:
+        csv_write = csv.writer(file)
+        for data in lst_data:
+            csv_write.writerow(data)
+
+
+def dispose_csv():
+    """
+    处理csv
+    :return:
+    """
+    global CSV_FILE_NAME
+    trip_f = open("thefly_trip.csv", "a", encoding="utf-8", newline="")
+    csv_write_trip = csv.writer(trip_f)
+    csv_write_trip.writerow(CSV_TITLE)
+    tour_f = open("thefly_tour.csv", "a", encoding="utf-8", newline="")
+    csv_write_tour = csv.writer(tour_f)
+    csv_write_tour.writerow(CSV_TITLE)
+    with open(CSV_FILE_NAME, "r", encoding="utf-8", newline="") as file:
+        csv_reader = csv.reader(file)
+        for i, data in enumerate(csv_reader):
+            if i == 0:
+                continue
+            if "trip" in data[1]:
+                csv_write_trip.writerow(data)
+            elif "tour" in data[1]:
+                csv_write_tour.writerow(data)
+    trip_f.close()
+    tour_f.close()
+
+
+if __name__ == '__main__':
+    #main()
+    dispose_csv()
